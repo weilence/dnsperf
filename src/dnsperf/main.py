@@ -172,20 +172,25 @@ def build(
 @cli.command()
 @click.option("-f", "--pcap-file", required=True)
 @click.option("-i", "--iface", required=True)
-@click.option("--pps", default=1)
-@click.option("--cpu", default=1)
-def send(pcap_file: str, iface: str, pps: int, cpu: int):
-    processes: List[Popen] = []
-    for _ in range(cpu):
-        cmd = f"tcpreplay -i {iface} -K --pps {pps} --loop=0 {pcap_file}"
-        process = subprocess.Popen(cmd, shell=True, check=True)
-        processes.append(process)
-        click.echo(
-            f"send {pcap_file} with {pps} pps on {iface} in process {process.pid}"
-        )
+@click.option("-p", "--pps", type=int)
+@click.option("-M", "--mbps", type=int)
+@click.option("--stats", default=1)
+def send(pcap_file: str, iface: str, pps: int, mbps: int, stats: int):
+    cmd = f"tcpreplay -i {iface} -K --loop=0 --no-flow-stats"
+    if pps:
+        cmd += f" --pps={pps}"
+    elif mbps:
+        cmd += f" --mbps={mbps}"
+    else:
+        click.echo("pps or mbps must be set")
+        return
 
-    for p in processes:
-        p.wait()
+    if stats:
+        cmd += f" --stats={stats}"
+
+    cmd += f" {pcap_file}"
+
+    subprocess.run(cmd, shell=True)
 
     click.echo(f"Successfully sent {pcap_file} with {pps} pps on {iface}")
 
