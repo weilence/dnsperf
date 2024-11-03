@@ -1,7 +1,5 @@
 import ipaddress
 from multiprocessing import Process, cpu_count
-from subprocess import Popen
-from typing import Type
 from scapy.all import *
 from scapy.layers.inet import *
 from scapy.layers.dns import *
@@ -74,7 +72,7 @@ def build_pcap(
 ):
     ether_layer = Ether(src=src_mac, dst=dst_mac)
     ip_layer = IP(src=RandIP(src_ip), dst=dst_ip)
-    udp_layer = UDP(sport=RandShort(), dport=53)
+    udp_layer = UDP(sport=RandNum(40000, 60000), dport=53)
     dns_layer = DNS(
         rd=1,
         qd=DNSQREnumeration(data),
