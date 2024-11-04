@@ -172,9 +172,10 @@ def build(
 @click.option("-i", "--iface", required=True)
 @click.option("-p", "--pps", type=int)
 @click.option("-M", "--mbps", type=int)
+@click.option("--loop", default=0)
 @click.option("--stats", default=1)
-def send(pcap_file: str, iface: str, pps: int, mbps: int, stats: int):
-    cmd = f"tcpreplay -i {iface} -K --loop=0 --no-flow-stats"
+def send(pcap_file: str, iface: str, pps: int, mbps: int, stats: int, loop: int):
+    cmd = f"tcpreplay -i {iface} -K --loop={loop} --no-flow-stats"
     if pps:
         cmd += f" --pps={pps}"
     elif mbps:

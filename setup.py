@@ -8,7 +8,7 @@ setup(
     install_requires=["click>=8.1.7", "scapy>=2.6.0"],
     entry_points={
         "console_scripts": [
-            "dnsperf=dnsperf.main:main",
+            "dnsperf=dnsperf.main:cli",
         ],
     },
     author="Weilence",
