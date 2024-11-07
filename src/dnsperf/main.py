@@ -71,7 +71,10 @@ def build_pcap(
     ecs: str = None,
 ):
     ether_layer = Ether(src=src_mac, dst=dst_mac)
-    ip_layer = IP(src=RandIP(src_ip), dst=dst_ip)
+    if ":" in src_ip:
+        ip_layer = IPv6(src=RandIP6(src_ip), dst=dst_ip)
+    else:
+        ip_layer = IP(src=RandIP(src_ip), dst=dst_ip)
     udp_layer = UDP(sport=RandNum(40000, 60000), dport=53)
     dns_layer = DNS(
         rd=1,
