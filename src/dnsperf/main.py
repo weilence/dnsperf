@@ -1,5 +1,9 @@
 import ipaddress
 from multiprocessing import Process, cpu_count
+import threading
+import subprocess
+import os
+import sys
 from scapy.all import *
 from scapy.layers.inet import *
 from scapy.layers.dns import *
@@ -25,8 +29,7 @@ def generate_data(file_path: str):
 def generate_data_from_stdin():
     list = []
     click.echo("Please input the data, format: qname qtype [times]")
-    while True:
-        line = input()
+    for line in sys.stdin:
         if not line:
             break
         strs = line.strip().split()
@@ -240,24 +243,166 @@ def build(
 @click.option("-M", "--mbps", type=int)
 @click.option("--loop", default=0)
 @click.option("--stats", default=1)
-def send(pcap_file: str, iface: str, pps: int, mbps: int, stats: int, loop: int):
-    cmd = f"tcpreplay -i {iface} -K --loop={loop} --no-flow-stats"
+@click.option(
+    "-t", "--threads", default=1, help="Number of threads to use for sending packets"
+)
+@click.option(
+    "--output-mode",
+    type=click.Choice(["interleaved", "grouped", "separate"]),
+    default="grouped",
+    help="Output mode: interleaved (混合输出), grouped (分组输出), separate (分离输出)",
+)
+def send(
+    pcap_file: str,
+    iface: str,
+    pps: int,
+    mbps: int,
+    stats: int,
+    loop: int,
+    threads: int,
+    output_mode: str,
+):
+    if threads < 1:
+        click.echo("Threads must be at least 1")
+        return
+
+    base_cmd = f"tcpreplay -i {iface} -K --loop={loop}"
+
     if pps:
-        cmd += f" --pps={pps}"
+        # 将总pps平均分配给每个线程
+        thread_pps = pps // threads
+        base_cmd += f" --pps={thread_pps}"
     elif mbps:
-        cmd += f" --mbps={mbps}"
+        # 将总mbps平均分配给每个线程
+        thread_mbps = mbps // threads
+        base_cmd += f" --mbps={thread_mbps}"
     else:
         click.echo("pps or mbps must be set")
         return
 
     if stats:
-        cmd += f" --stats={stats}"
+        base_cmd += f" --stats={stats}"
 
-    cmd += f" {pcap_file}"
+    base_cmd += f" {pcap_file}"
 
-    subprocess.run(cmd, shell=True)
+    # 定义ANSI颜色代码
+    colors = [
+        "\033[31m",  # 红色
+        "\033[32m",  # 绿色
+        "\033[33m",  # 黄色
+        "\033[34m",  # 蓝色
+        "\033[35m",  # 紫色
+        "\033[36m",  # 青色
+        "\033[91m",  # 亮红色
+        "\033[92m",  # 亮绿色
+        "\033[93m",  # 亮黄色
+        "\033[94m",  # 亮蓝色
+        "\033[95m",  # 亮紫色
+        "\033[96m",  # 亮青色
+    ]
+    reset_color = "\033[0m"  # 重置颜色
 
-    click.echo(f"Successfully sent {pcap_file} with {pps} pps on {iface}")
+    # 创建线程锁用于同步输出
+    output_lock = threading.Lock()
+
+    # 为每个线程创建输出缓冲区
+    thread_outputs = {i + 1: [] for i in range(threads)}
+
+    def run_tcpreplay(cmd, thread_id):
+        thread_color = colors[(thread_id - 1) % len(colors)]
+
+        with output_lock:
+            click.echo(f"{thread_color}Thread {thread_id} starting: {cmd}{reset_color}")
+
+        # 使用Popen而不是run，这样可以实时获取输出
+        process = subprocess.Popen(
+            cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+            bufsize=1,
+        )
+
+        # 根据输出模式处理输出
+        if output_mode == "interleaved":
+            # 交错模式：直接输出，但带有颜色和线程ID前缀
+            for line in process.stdout:
+                with output_lock:
+                    click.echo(
+                        f"{thread_color}Thread {thread_id}: {line.strip()}{reset_color}"
+                    )
+
+        elif output_mode == "grouped":
+            # 分组模式：收集一组输出（例如统计信息），然后一次性输出
+            buffer = []
+            for line in process.stdout:
+                buffer.append(line.strip())
+                # 当收集到统计信息或缓冲区达到一定大小时输出
+                if "Actual: " in line or "Retried packets (EAGAIN): " in line:
+                    with output_lock:
+                        click.echo(
+                            f"{thread_color}--- Thread {thread_id} Output ---{reset_color}"
+                        )
+                        for buffered_line in buffer:
+                            click.echo(f"{thread_color}{buffered_line}{reset_color}")
+                        click.echo(
+                            f"{thread_color}------------------------{reset_color}"
+                        )
+                    buffer = []
+
+            # 输出剩余的缓冲区内容
+            if buffer:
+                with output_lock:
+                    click.echo(
+                        f"{thread_color}--- Thread {thread_id} Output ---{reset_color}"
+                    )
+                    for buffered_line in buffer:
+                        click.echo(f"{thread_color}{buffered_line}{reset_color}")
+                    click.echo(f"{thread_color}------------------------{reset_color}")
+
+        else:  # separate
+            # 分离模式：将所有输出存储在线程特定的缓冲区中，在线程完成后输出
+            for line in process.stdout:
+                thread_outputs[thread_id].append(line.strip())
+
+        process.wait()
+
+        with output_lock:
+            click.echo(
+                f"{thread_color}Thread {thread_id} completed with return code: {process.returncode}{reset_color}"
+            )
+
+            # 如果是分离模式，在线程完成后输出所有内容
+            if output_mode == "separate" and thread_outputs[thread_id]:
+                click.echo(
+                    f"{thread_color}=== Thread {thread_id} Complete Output ==={reset_color}"
+                )
+                for line in thread_outputs[thread_id]:
+                    click.echo(f"{thread_color}{line}{reset_color}")
+                click.echo(
+                    f"{thread_color}================================={reset_color}"
+                )
+
+    # 创建并启动多个线程
+    thread_list = []
+    for i in range(threads):
+        t = threading.Thread(target=run_tcpreplay, args=(base_cmd, i + 1))
+        thread_list.append(t)
+        t.start()
+
+    # 等待所有线程完成
+    for t in thread_list:
+        t.join()
+
+    if pps:
+        click.echo(
+            f"Successfully sent {pcap_file} with {pps} pps ({pps//threads} pps per thread) on {iface} using {threads} threads"
+        )
+    else:
+        click.echo(
+            f"Successfully sent {pcap_file} with {mbps} mbps ({mbps//threads} mbps per thread) on {iface} using {threads} threads"
+        )
 
 
 if __name__ == "__main__":
