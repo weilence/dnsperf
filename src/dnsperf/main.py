@@ -16,6 +16,30 @@ def cli(ctx, debug):
 
 
 def generate_data(file_path: str):
+    if not file_path:
+        return generate_data_from_stdin()
+
+    return generate_data_from_file(file_path)
+
+
+def generate_data_from_stdin():
+    list = []
+    click.echo("Please input the data, format: qname qtype [times]")
+    while True:
+        line = input()
+        if not line:
+            break
+        strs = line.strip().split()
+        qname = strs[0]
+        qtype = strs[1]
+        times = strs[2] if len(strs) > 2 else 1
+        for _ in range(int(times)):
+            list.append({"qname": qname, "qtype": qtype})
+
+    return list
+
+
+def generate_data_from_file(file_path):
     list = []
 
     with open(file_path, "r") as f:
@@ -121,11 +145,38 @@ def merge_pcaps(input_files, output_file):
     print(f"Successfully merged {input_files} into {output_file}")
 
 
+def get_route_info(target_ip):
+    iface, output_ip, gateway_ip = conf.route.route(target_ip)
+    return iface, output_ip, gateway_ip
+
+
+def get_dst_mac(interface: str, dst_ip: str, gateway_ip: str):
+    if gateway_ip == "0.0.0.0":
+        arp_request = ARP(pdst=dst_ip)
+    else:
+        arp_request = ARP(pdst=gateway_ip)
+
+    # 构造 ARP 请求包
+    broadcast = Ether(dst="ff:ff:ff:ff:ff:ff")
+    arp_request_broadcast = broadcast / arp_request
+
+    # 发送 ARP 请求，等待回应
+    answered_list = srp(
+        arp_request_broadcast, timeout=1, verbose=False, iface=interface
+    )[0]
+
+    if answered_list:
+        dst_mac = answered_list[0][1].hwsrc
+        return dst_mac
+    else:
+        return None
+
+
 @cli.command()
-@click.option("-f", "--file", required=True)
-@click.option("--src-mac", required=True)
-@click.option("--dst-mac", required=True)
-@click.option("--src-ip", required=True)
+@click.option("-f", "--file")
+@click.option("--src-mac")
+@click.option("--dst-mac")
+@click.option("--src-ip")
 @click.option("--dst-ip", required=True)
 @click.option("-o", "--output", required=True)
 @click.option("--ecs")
@@ -140,6 +191,18 @@ def build(
     dst_ip: str,
     ecs: str,
 ):
+    iface, output_ip, gateway_ip = get_route_info(dst_ip)
+    if not src_ip:
+        src_ip = output_ip
+    if not src_mac:
+        src_mac = get_if_hwaddr(iface)
+    if not dst_mac:
+        dst_mac = get_dst_mac(iface, dst_ip, gateway_ip)
+
+    click.echo(
+        f"iface: {iface}, gateway: {gateway_ip}, src_mac: {src_mac}, dst_mac: {dst_mac}, src_ip: {output_ip}, dst_ip: {dst_ip}\n"
+    )
+
     data = generate_data(file)
     if ctx.obj["debug"]:
         pass
